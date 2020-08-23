@@ -13,7 +13,6 @@ def fit(self, y_name, features_name):
             self.res = res
         except:
             self.res = None
-            print('**********EXCEPT***********current info:', self.start_cityname, self.end_cityname)
             return None
     if self.res.params['mileage'] <= 0 or \
             self.res.params['weight_mileage'] <= 0 or \
