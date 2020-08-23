@@ -28,3 +28,7 @@ def fit(self, y_name, features_name):
         os.makedirs(dirs)
     self.show_result(dirs)
     return self.res
+
+
+if __name__ == "__main__":
+    res = fit('price', 'mileage + weight_mileage')
