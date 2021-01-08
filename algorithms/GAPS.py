@@ -5,15 +5,89 @@ from sklearn.model_selection import train_test_split
 
 
 class GAPS:
-    '''
-    遗传算法超参数优化
-    '''
+    """Evolutionary search of best hyperparameters, based on Genetic
+    Algorithms
 
-    def __init__(self):
+    Parameters
+    ----------
+    params : dict or list of dictionaries
+        each dictionary must have parameter_name:sorted(list of possible values):
+        params = {"kernel": ["rbf"],
+                 "C"     : [1,2,3,4,5,6,7,8],
+                 "gamma" : np.logspace(-9, 9, num=25, base=10)}
+        Notice that Numerical values (floats) must be ordered in ascending or descending
+        order.
+
+    Examples
+    --------
+        import sklearn.datasets
+        import numpy as np
+        import random
+
+        data = sklearn.datasets.load_digits()
+        X = data["data"]
+        y = data["target"]
+
+        from sklearn.svm import SVC
+        from sklearn.model_selection import StratifiedKFold
+
+        paramgrid = {"kernel": ["rbf"],
+                     "C"     : np.logspace(-9, 9, num=25, base=10),
+                     "gamma" : np.logspace(-9, 9, num=25, base=10)}
+
+        random.seed(1)
+
+        from evolutionary_search import EvolutionaryAlgorithmSearchCV
+        cv = EvolutionaryAlgorithmSearchCV(estimator=SVC(),
+                                           params=paramgrid,
+                                           scoring="accuracy",
+                                           cv=StratifiedKFold(n_splits=10),
+                                           verbose=1,
+                                           population_size=50,
+                                           gene_mutation_prob=0.10,
+                                           gene_crossover_prob=0.5,
+                                           tournament_size=3,
+                                           generations_number=10)
+        cv.fit(X, y)
+
+
+    Attributes
+    ----------
+    best_estimator_ : estimator
+        Estimator that was chosen by the search, i.e. estimator
+        which gave highest score (or smallest loss if specified)
+        on the left out data. Not available if refit=False.
+    """
+
+    def __init__(self,
+                 continue_param_dict=None,
+                 dispersion_param_dict=None,
+                 fit_param=None
+                 ):
         self.train_data = None
         self.test_data = None
-        # 遗传算法参数
+        self.error_info = None
+        self.init_success = True
+        self.continue_param_len = 0
+        self.dispersion_param_len = 0
+        self.continue_param_dict = continue_param_dict
+        self.dispersion_param_dict = dispersion_param_dict
+        self.continue_param_names = [] if continue_param_dict is None else list(continue_param_dict.keys())
+        self.dispersion_param_names = [] if dispersion_param_dict is None else list(dispersion_param_dict.keys())
+        self._fit_param = dict() if fit_param is None else fit_param
         self._params_dict = dict()
+        self._param_code_pos = dict()
+
+        # 遗传算法需要优化的参数
+        self._optimize_param(continue_param_dict, dispersion_param_dict)
+        if not self.init_success:
+            print("Init failed.Error info:{}".format(self.error_info))
+
+        # 遗传算法参数
+        self._param_init(self._fit_param)
+        self._check_param()
+        if not self.init_success:
+            print("Init failed.Error info:{}".format(self.error_info))
 
         # 遗传算法数据结构
         self.pop_matrix = None
@@ -21,23 +95,12 @@ class GAPS:
         self.pop_scores = None
         self.sorted_item_info = None
 
+    def _check_param(self):
+        pass
+
     def _param_init(self, params_dict):
-        if "param_len" not in params_dict.keys():
-            return False
-        else:
-            if not isinstance(params_dict['param_len'], int):
-                print("输入 param_len 参数 必须是 int 类型，且 > 0")
-                return False
-            self._params_dict['param_len'] = params_dict['param_len']
-        if "param_width" not in params_dict.keys():
-            self._params_dict['param_width'] = 8
-        else:
-            if not isinstance(params_dict['param_width'], int):
-                print("输入 param_width 参数 必须是 int 类型，且 > 0")
-                return False
-            self._params_dict['param_width'] = params_dict['param_width']
         if "pop_size" not in params_dict.keys():
-            self._params_dict['pop_size'] = 500
+            self._params_dict['pop_size'] = 200
         else:
             self._params_dict['pop_size'] = params_dict['pop_size']
         if "mutate_rate" not in params_dict.keys():
@@ -61,13 +124,89 @@ class GAPS:
         else:
             self._params_dict['problem_type'] = params_dict['problem_type']
 
+    def _optimize_param(self, continue_param_dict, dispersion_param_dict):
+        if continue_param_dict is None and dispersion_param_dict is None:
+            self.init_success = False
+            self.error_info = "Input optimize param is None."
+            return
+        self._params_dict['param_len'] = 0
+        if not (continue_param_dict is None):
+            if not isinstance(continue_param_dict, dict):
+                self.init_success = False
+                self.error_info = "Input continue_param_dict is not dict."
+                return
+            if len(continue_param_dict) == 0:
+                return
+            self.continue_param_len = len(continue_param_dict)
+            self._params_dict['param_len'] += len(continue_param_dict)
+            max_value = -np.inf
+            min_value = np.inf
+            for key in continue_param_dict.keys():
+                item = continue_param_dict[key]
+                if item[0] < min_value:
+                    min_value = item[0]
+                if item[1] > max_value:
+                    max_value = item[1]
+            param_width = 1
+            cumvalue = 1
+            while cumvalue < max_value:
+                cumvalue += 1 << param_width
+                param_width += 1
+            self._params_dict['param_width'] = param_width
+            # 确定每一个参数，基因的位置
+            i = 0
+            for key in continue_param_dict.keys():
+                # 计算左界的位置
+                param_pos = 0
+                cumvalue = 1
+                while cumvalue < continue_param_dict[key][0]:
+                    param_pos += 1
+                    cumvalue += 1 << param_pos
+                item = [param_pos]
+
+                # 计算右界的位置
+                param_pos = 0
+                cumvalue = 1
+                while cumvalue < continue_param_dict[key][1]:
+                    param_pos += 1
+                    cumvalue += 1 << param_pos
+                item.append(param_pos)
+                self._param_code_pos[i] = item
+                i += 1
+
+        if not (dispersion_param_dict is None):
+            if not isinstance(dispersion_param_dict, dict):
+                self.init_success = False
+                self.error_info = "Input dispersion_param_dict is dict."
+            if len(dispersion_param_dict) == 0:
+                return
+            self.dispersion_param_len = len(dispersion_param_dict)
+            self._params_dict['param_len'] += len(dispersion_param_dict)
+            # TODO 获取离散变量的长度，是否超出当前参数宽度所能表示的范围
+
+            #
+            for key in dispersion_param_dict.keys():
+                # 计算左界的位置
+                param_pos = 0
+                item = [param_pos]
+                # 计算右界的位置
+                # param_pos = 0
+                # cumvalue = 1
+                # while cumvalue < len(dispersion_param_dict[key]):
+                #     param_pos += 1
+                #     cumvalue += 1 << param_pos
+                param_pos = len(dispersion_param_dict[key]) - 1
+                item.append(param_pos)
+                self._param_code_pos[i] = item
+                i += 1
+
     def _pop_init(self, init=None):
         self.pop_matrix = np.random.randint(0, 2, [self._params_dict['pop_size'],
                                                    self._params_dict['param_width'] * self._params_dict['param_len']],
                                             dtype=int)
         if init is not None:
-            for i in range(0, init.shape[0]):
-                self.pop_matrix[i] = init[i]
+            pass
+
         self.children_matrix = np.zeros([self._params_dict['pop_size'],
                                          self._params_dict['param_width'] * self._params_dict['param_len']],
                                         dtype=int)
@@ -75,20 +214,34 @@ class GAPS:
         for i in range(self._params_dict['pop_size']):
             self.pop_scores[i] = 0.0
 
-    def _update(self, train, test, obj, feval, item_index):
-        # 解码，获取参数实际值
-        item = self.pop_matrix[item_index]
-        param_values = np.zeros([self._params_dict['param_len']], dtype=float)
+    def _uncode(self, item):
+        # 解码 返回实际参数值
+        param_values = dict()
         for i in range(self._params_dict['param_len']):
             param_value = 0
             for j in range(self._params_dict['param_width']):
-                param_value += item[i * self._params_dict['param_width'] + j] << j
-            param_value = param_value / 100.0
-            param_values[i] = param_value
-        # obj feval 形式待定
+                if self._param_code_pos[i][0] <= j <= self._param_code_pos[i][1]:
+                    param_value += item[i * self._params_dict['param_width'] + j] << j
+            if i < self.continue_param_len:
+                param_name = self.continue_param_names[i]
+                if param_value > self.continue_param_dict[param_name][1]:
+                    param_value = self.continue_param_dict[param_name][1]
+                param_values[param_name] = param_value
+            else:
+                param_name = self.dispersion_param_names[i-self.continue_param_len]
+                if param_value >= len(self.dispersion_param_dict[param_name]) - 1:
+                    param_value = len(self.dispersion_param_dict[param_name]) - 1
+                param_value = self.dispersion_param_dict[param_name][param_value]
+                param_values[param_name] = param_value
+        return param_values
+
+    def _update(self, train, test, obj, feval, item_index):
+        # 获取参数实际值
+        item = self.pop_matrix[item_index]
+        param_values = self._uncode(item)
         pre_test = obj(train, test, param_values)
-        acc5, acc10, new_acc = feval(test, pre_test)
-        return new_acc
+        score = feval(test, pre_test)
+        return score
 
     def _cal_pop_score(self, train, test, obj, feval):
         for i in range(self._params_dict['pop_size']):
@@ -162,19 +315,12 @@ class GAPS:
     def _output(self):
         best_item = self.pop_matrix[self.sorted_item_info[0][0]]
         obj_value = self.sorted_item_info[0][1]
-        param_values = np.zeros([self._params_dict['param_len']], dtype=float)
-        for i in range(self._params_dict['param_len']):
-            param_value = 0
-            for j in range(self._params_dict['param_width']):
-                param_value += best_item[i * self._params_dict['param_width'] + j] << j
-            param_value = param_value / 100.0
-            param_values[i] = param_value
+        param_values = self._uncode(best_item)
         return param_values, obj_value
 
-    def _fit_param_internal(self, train, test, params_dict, obj, feval, init):
+    def _search_internal(self, train, test, obj, feval, init=None):
         # 1、初始化
-        self._param_init(params_dict=params_dict)
-        self._pop_init()
+        self._pop_init(init=init)
         self._cal_pop_score(train, test, obj, feval)
 
         # 2、GA 主流程
@@ -183,18 +329,19 @@ class GAPS:
         # 3、求解结束
         return self._output()
 
-    def fit_param(self, train_data, test_data, params_dict, obj=None, feval=None, init_solution=None):
-        '''
-        train_data:训练数据集
-        test_data:验证数据集
-        obj:user define train function
-        feval:user define metrics function
-        '''
-        if obj is None or feval is None:
+    def search(self,
+               train_data=None,
+               test_data=None,
+               training=None,
+               scoring=None,
+               init_solution=None
+               ):
+        if training is None or scoring is None:
             assert "必须输入训练函数和评价函数～"
             return None
         else:
-            return self._fit_param_internal(train_data, test_data, params_dict, obj=obj, feval=feval, init=init_solution)
+            return self._search_internal(train_data, test_data, obj=training, feval=scoring,
+                                         init=init_solution)
 
 
 if __name__ == '__main__':
@@ -209,24 +356,27 @@ if __name__ == '__main__':
 
     def user_train_function(train_data, test_data, param_values):
         test = test_data[:, 0:13]
-        p = np.array(param_values)
-        return (test @ p.T).reshape(1, -1)[0]
+        return test_data
 
 
     def user_feval_function(test_data, test_pre):
         test_y = test_data[:, 13]
-        return 1, 1, sum(abs(test_y - test_pre))
+        return np.random.randint(50, 100)
 
 
-    gaps = GAPS()
-    param = dict()
-    param['pop_size'] = 500
-    param['param_len'] = 13
-    param['param_width'] = 4
-    param['problem_type'] = 'min'
-    param['max_iter_num'] = 500
-    sol, obj_value = gaps.fit_param(train_data, test_data, params_dict=param,
-                                    obj=user_train_function,
-                                    feval=user_feval_function)
+    con_param = dict()
+    con_param['A'] = [0, 100]
+    con_param['B'] = [0, 200]
+    con_param['C'] = [100, 500]
+    dis_param = dict()
+    dis_param['a'] = [1, 20, 50, 100, 200]
+    dis_param['b'] = ['b1', 'b2', 'b3', 'b4', 'b5']
+    gaps = GAPS(continue_param_dict=con_param, dispersion_param_dict=dis_param)
+    sol, obj_value = gaps.search(train_data,
+                                 test_data,
+                                training=user_train_function,
+                                scoring=user_feval_function)
     print(sol)
     print(obj_value)
+    #
+    # Categorical = 1, Numerical = 2
